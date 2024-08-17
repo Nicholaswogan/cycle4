@@ -83,7 +83,7 @@ def get_inputs():
     return inputs
 
 def main():
-    filename = 'results/tmp.pkl' # Specify output filename
+    filename = 'results/LHS1445Ab_grid.pkl' # Specify output filename
     ncores = 4 # Specify number of cores
     inputs = get_inputs() # get inputs
 
