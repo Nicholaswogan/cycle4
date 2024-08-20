@@ -121,10 +121,10 @@ CLIMATE_MODEL = utils.AdiabatClimateThermalEmission(
     planets.LTT1445Ab.Teq,
     planets.LTT1445Ab.mass,
     planets.LTT1445Ab.radius,
-    planets.LTT1445A.Teff,
-    planets.LTT1445A.metal,
-    planets.LTT1445A.logg,
     planets.LTT1445A.radius,
+    Teff=planets.LTT1445A.Teff,
+    metal=planets.LTT1445A.metal,
+    logg=planets.LTT1445A.logg,
     nz=50
 )
 CLIMATE_MODEL.verbose = False

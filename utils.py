@@ -25,10 +25,10 @@ class ThermalEmissionData():
 class AdiabatClimateThermalEmission(AdiabatClimate):
     "An extension of the AdiabatClimate class to interpret thermal emission observations."
 
-    def __init__(self, Teq, M_planet, R_planet, Teff, metal, logg, R_star, 
-                 species_file=None, settings_template=None, data_dir=None, nz=50, number_of_zeniths=1, 
-                 catdir='phoenix', nw=5000, stellar_surface_scaling=1.0):
-        """Initializes the code.
+    def __init__(self, Teq, M_planet, R_planet, R_star, Teff=None, metal=None, logg=None, 
+                 stellar_surface_file=None, catdir='phoenix', nw=5000, stellar_surface_scaling=1.0,
+                 species_file=None, settings_template=None, data_dir=None, nz=50, number_of_zeniths=1):
+        """Initializes the code. 
 
         Parameters
         ----------
@@ -38,14 +38,25 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             Mass of the planet in Earth masses.
         R_planet : float
             Radius of the planet in Earth radii.
-        Teff : float
-            Stellar effective temperature in K.
-        metal : float
-            log10 metallicity of the star.
-        logg : float
-            log10 gravity of the star in cgs units.
         R_star : float
             Stellar radius in solar radii.
+        Teff : float, optional
+            Stellar effective temperature in K.
+        metal : float, optional
+            log10 metallicity of the star.
+        logg : float, optional
+            log10 gravity of the star in cgs units.
+        stellar_surface_file : str, optional
+            Path to the stellar surface file. If this file is not specified, then the code will
+            alternatively construct a stellar spectrum using pysynphot. The file must have two 
+            columns where the first is wavelength in nm, and the second is stellar flux in mW/m^2/nm. 
+            The first line of the file is always skipped, with the assumption they are column labels.
+        catdir : str, optional
+            The stellar database, by default 'phoenix'
+        nw : int, optional
+            Number of wavelength to regrid the stellar flux to before input into the model, by default 5000
+        stellar_surface_scaling : float, optional
+            Optional scaling to apply to the stellar surface flux, by default 1.0
         species_file : str, optional
             Path to a settings file. If None, then a default file is used.
         settings_template : str, optional
@@ -56,13 +67,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             Number of vertical layers in the climate model, by default 50
         number_of_zeniths : int, optional
             Number of zenith angles in the radiative transfer calculation, by default 1
-        catdir : str, optional
-            The stellar database, by default 'phoenix'
-        nw : int, optional
-            Number of wavelength to regrid the stellar flux to before input into the model, by default 5000
-        stellar_surface_scaling : float, optional
-            Optional scaling to apply to the stellar surface flux, by default 1.0
-        """        
+        """ 
         
         # Species file
         if species_file is None:
@@ -82,8 +87,16 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         settings_dict['planet']['planet-radius'] = float(R_planet*constants.R_earth.to('cm').value) # cm
         settings_dict['planet']['number-of-zenith-angles'] = int(number_of_zeniths)
 
-        # Get stellar flux information
-        wv_star, F_star, wv_planet, F_planet = make_pysynphot_stellar_spectrum(Teq, Teff, metal, logg, catdir, nw)
+        if stellar_surface_file is None:
+            if Teff is None or metal is None or logg is None:
+                raise ClimaException('If `stellar_surface_file` is None, then `Teff`, `metal` and `logg` '+
+                                     'must all be supplied')
+            # Get stellar flux from pysynphot
+            wv_star, F_star, wv_planet, F_planet = make_pysynphot_stellar_spectrum(Teq, Teff, metal, logg, catdir, nw)
+        else:
+            # Get stellar flux from a file
+            wv_star, F_star, wv_planet, F_planet = make_file_stellar_spectrum(Teq, stellar_surface_file, nw)
+
         F_star = F_star*stellar_surface_scaling # Scale stellar surface, if necessary
         # Load the flux at the planet to a string
         flux_str = ""
@@ -437,7 +450,28 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             err = err_n
 
         return wavl, F, err
-    
+
+def get_planet_flux(Teq, wv_star, F_star, nw):
+
+    # Convert to units in climate model
+    wv_0 = wv_star*1e3 # to nm
+    # erg/cm^2/s/cm * (W/(erg/s)) * (mW/W) * (cm^2/m^2) * (cm/m) * (m/nm) = mW/m^2/nm
+    F_0 = F_star*(1/1e7)*(1e3/1)*(1e4/1)*(1e2/1)*(1/1e9) 
+
+    # Interpolate to smaller resolution appropriate for climate modeling
+    wv_planet = np.logspace(np.log10(np.min(wv_0)),np.log10(np.max(wv_0)),nw)
+    F_planet = np.interp(wv_planet, wv_0, F_0)
+
+    # Compute stellar flux implied by equilibrium temperature (W/m^2)
+    stellar_flux = bolometric_flux(Teq, 0.0)
+
+    # Rescale so that it has the proper stellar flux for the planet
+    tmp = 1e-3*np.sum(F_planet[:-1]*(wv_planet[1:]-wv_planet[:-1])) # W/m^2
+    factor = stellar_flux/tmp
+    F_planet *= factor
+
+    return wv_planet, F_planet
+
 def make_pysynphot_stellar_spectrum(Teq, Teff, metal, logg, catdir='phoenix', nw=5000):
     """Create stellar spectrum for AdiabatClimate and thermal emission predictions
     using the pysynphot package
@@ -472,22 +506,24 @@ def make_pysynphot_stellar_spectrum(Teq, Teff, metal, logg, catdir='phoenix', nw
     wv_star = sp.wave.copy() # um
     F_star = sp.flux.copy()*1e8 # Convert to ergs/cm2/s/cm
 
-    # Convert to units in climate model
-    wv_0 = wv_star*1e3 # to nm
-    # erg/cm^2/s/cm * (W/(erg/s)) * (mW/W) * (cm^2/m^2) * (cm/m) * (m/nm) = mW/m^2/nm
-    F_0 = F_star*(1/1e7)*(1e3/1)*(1e4/1)*(1e2/1)*(1/1e9) 
+    wv_planet, F_planet = get_planet_flux(Teq, wv_star, F_star, nw)
 
-    # Interpolate to smaller resolution appropriate for climate modeling
-    wv_planet = np.logspace(np.log10(np.min(wv_0)),np.log10(np.max(wv_0)),nw)
-    F_planet = np.interp(wv_planet, wv_0, F_0)
+    return wv_star, F_star, wv_planet, F_planet
 
-    # Compute stellar flux implied by equilibrium temperature (W/m^2)
-    stellar_flux = bolometric_flux(Teq, 0.0)
+def make_file_stellar_spectrum(Teq, stellar_surface_file, nw):
 
-    # Rescale so that it has the proper stellar flux for the planet
-    tmp = 1e-3*np.sum(F_planet[:-1]*(wv_planet[1:]-wv_planet[:-1])) # W/m^2
-    factor = stellar_flux/tmp
-    F_planet *= factor
+    # Get the spectrum. wv_star is nm and F_star is mW/m^2/nm. 
+    # Must convert to microns and ergs/cm2/s/cm
+    wv_star, F_star = np.loadtxt(stellar_surface_file, skiprows=1).T
+
+    # nm * (1 um/ 1e3 nm) = um
+    wv_star = wv_star/1e3
+
+    # mW/m^2/nm * (1e9 nm / m) * (m / 1e2 cm) * (W / 1e3 mW) * (1e7 (ergs/s) / W) * (m^2 / 1e4 cm^2)
+    # = ergs/cm^2/s/cm
+    F_star = F_star*(1e9/1)*(1/1e2)*(1/1e3)*(1e7/1)*(1/1e4)
+
+    wv_planet, F_planet = get_planet_flux(Teq, wv_star, F_star, nw)
 
     return wv_star, F_star, wv_planet, F_planet
 
