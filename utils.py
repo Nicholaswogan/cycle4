@@ -260,7 +260,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         thermdat = self.thermdat
 
         wv_av = (wavl[1:] + wavl[:-1])/2
-        F_planet = blackbody(T, wv_av/1e4)[0]*np.pi
+        F_planet = blackbody(T, wv_av/1e4)*np.pi
         F_star = rebin(thermdat.wavl_star, thermdat.flux_star, wavl)
         fpfs = F_planet/F_star * (thermdat.R_planet**2/thermdat.R_star**2)
 
@@ -291,6 +291,24 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
 
         return self.rad.ir.wavl/1e3, F_planet, fpfs_c
     
+    def brightness_temperature(self):
+        """Returns the brightness temperature using the most recent radiative transfer
+        result
+
+        Returns
+        -------
+        wavl : ndarray[double,ndim=1]
+            Edges of the wavelength grid in microns.
+        T : ndarray[double,ndim=1]
+            The brightness temperature (K) in each wavelength bin.
+        """        
+        wavl, F_planet, _ = self.fpfs()
+        T = np.empty(F_planet.shape[0])
+        for i in range(F_planet.shape[0]):
+            wv_av = (wavl[i] + wavl[i+1])/2
+            T[i] = inverse_blackbody(F_planet[i]/np.pi,np.array([wv_av/1e4]))
+        return wavl, T
+
     # def fpfs_picaso(self, bundle, opacityclass, picaso_kwargs={}):
     #     bundle.surface_reflect(self.surface_albedo_hires, opacityclass.wno, self.surface_albedo_hires_wno)
     #     atm = self.make_picaso_atm()
@@ -473,27 +491,51 @@ def make_pysynphot_stellar_spectrum(Teq, Teff, metal, logg, catdir='phoenix', nw
 
     return wv_star, F_star, wv_planet, F_planet
 
-@nb.njit()
-def blackbody(t, w):
+@nb.njit(types.double[:](types.double,types.double[:]))
+def blackbody(T, lam):
     """
-    Blackbody flux in cgs units in per unit wavelength
+    Blackbody flux in cgs units in per unit wavelength (erg/cm^2/s/cm/sr)
 
     Parameters
     ----------
-    t : array,float
+    T : float
         Temperature (K)
-    w : array, float
+    lam : ndarray[ndim=1,double]
         Wavelength (cm)
     
     Returns
     -------
-    ndarray with shape ntemp x numwave
+    ndarray[ndim=1,double]
+        The blackbody flux at the input wavelengths in erg/cm^2/s/cm/sr.
     """
     h = 6.62607004e-27 # erg s 
     c = 2.99792458e+10 # cm/s
-    k = 1.38064852e-16 #erg / K
+    k = 1.38064852e-16 # erg / K
+    B = ((2.0*h*c**2.0)/(lam**5.0))*(1.0/(np.exp((h*c)/(lam*k*T)) - 1.0))
+    return B
 
-    return ((2.0*h*c**2.0)/(w**5.0))*(1.0/(np.exp((h*c)/np.outer(t, w*k)) - 1.0))
+@nb.njit(types.double[:](types.double,types.double[:]))
+def inverse_blackbody(B, lam):
+    """
+    Inverse of the `blackbody` function.
+
+    Parameters
+    ----------
+    B : float
+        Blackbody flux in erg/cm^2/s/cm/sr
+    lam : ndarray[ndim=1,double]
+        Wavelength (cm)
+    
+    Returns
+    -------
+    ndarray[ndim=1,double]
+        The temperature at the input wavelengths in K.
+    """
+    h = 6.62607004e-27 # erg s 
+    c = 2.99792458e+10 # cm/s
+    k = 1.38064852e-16 # erg / K
+    T = ((c*h)/(k*lam))*(1/np.log(1 + (2*c**2*h)/(B*lam**5)))
+    return T
 
 @nb.njit()
 def equilibrium_temperature(stellar_radiation, bond_albedo):
