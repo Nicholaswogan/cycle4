@@ -3,6 +3,7 @@ import numba as nb
 from numba import types
 import yaml
 from tempfile import NamedTemporaryFile
+import sys
 
 from scipy import constants as const
 from astropy import constants
@@ -10,11 +11,23 @@ import pysynphot as psyn
 
 from clima import AdiabatClimate, ClimaException, rebin, rebin_with_errors
 
+# Two optional imports
+try:
+    from picaso import justdoit as jdi
+    import pandas as pd
+except ModuleNotFoundError:
+    pass
+try:
+    from pandexo.engine import justdoit as pandexo_jdi
+except ModuleNotFoundError:
+    pass
+
 # We use a jitclass because it has strict type checking
 @nb.experimental.jitclass()
 class ThermalEmissionData():
     Teq : types.double # Zero albedo equilibrium temperature # type: ignore
     R_planet : types.double # Radius of planet in cm # type: ignore
+    M_planet : types.double # Mass of planet in grams # type: ignore
     R_star : types.double # Radius of star in cm # type: ignore
     wavl_star : types.double[:] # Wavelength grid for stellar surface (um) # type: ignore
     flux_star : types.double[:] # Flux of stellar surface (ergs/cm^2/s/cm) # type: ignore
@@ -27,7 +40,8 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
 
     def __init__(self, Teq, M_planet, R_planet, R_star, Teff=None, metal=None, logg=None, 
                  stellar_surface_file=None, catdir='phoenix', nw=5000, stellar_surface_scaling=1.0,
-                 species_file=None, settings_template=None, data_dir=None, nz=50, number_of_zeniths=1):
+                 species_file=None, opacities_file=None, data_dir=None, nz=50, number_of_zeniths=1,
+                 photon_scale_factor=1.0):
         """Initializes the code. 
 
         Parameters
@@ -59,14 +73,16 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             Optional scaling to apply to the stellar surface flux, by default 1.0
         species_file : str, optional
             Path to a settings file. If None, then a default file is used.
-        settings_template : str, optional
-            Path to settings template. If None, then a default file is used.
+        opacities_file : str, optional
+            Path to a file describing the used opacities. If None, then a default file is used.
         data_dir : str, optional
             Path to where climate model data is stored. If None, then installed data is used.
         nz : int, optional
             Number of vertical layers in the climate model, by default 50
         number_of_zeniths : int, optional
             Number of zenith angles in the radiative transfer calculation, by default 1
+        photon_scale_factor : float, optional
+            A scaling factor to be applied to the stellar irradiation at the planet, by default 1.0.
         """ 
         
         # Species file
@@ -77,15 +93,19 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
                 species_dict = yaml.load(f, Loader=yaml.Loader)
 
         # Settings file
-        if settings_template is None:
-            settings_dict = yaml.safe_load(SETTINGS_FILE_TEMPLATE)
+        if opacities_file is None:
+            settings_dict = yaml.safe_load(DEFAULT_OPACITIES)
         else:
-            with open(settings_template,'r') as f:
+            with open(opacities_file,'r') as f:
                 settings_dict = yaml.load(f, Loader=yaml.Loader)
+        settings_dict['atmosphere-grid'] = {}
         settings_dict['atmosphere-grid']['number-of-layers'] = int(nz)
+        settings_dict['planet'] = {}
         settings_dict['planet']['planet-mass'] = float(M_planet*constants.M_earth.to('g').value) # grams
         settings_dict['planet']['planet-radius'] = float(R_planet*constants.R_earth.to('cm').value) # cm
         settings_dict['planet']['number-of-zenith-angles'] = int(number_of_zeniths)
+        settings_dict['planet']['photon-scale-factor'] = int(photon_scale_factor)
+        settings_dict['planet']['surface-albedo'] = 0.0
 
         if stellar_surface_file is None:
             if Teff is None or metal is None or logg is None:
@@ -140,12 +160,16 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         # Save some information
         self.thermdat.Teq = Teq
         self.thermdat.R_planet = float(R_planet*constants.R_earth.to('cm').value) # Planet radius in cm
+        self.thermdat.M_planet = float(M_planet*constants.M_earth.to('g').value) # Planet mass in grams
         self.thermdat.R_star = float(R_star*constants.R_sun.to('cm').value) # Star Radius in cm
 
         # Rebin stellar flux to Clima IR grid
         self.thermdat.wavl_star = wv_star # Stellar wavelength grid (microns)
         self.thermdat.flux_star = (F_star[1:] + F_star[:-1])/2 # Stellar flux in each bin (ergs/cm^2/s/cm)
         self.thermdat.flux_star_c = rebin(self.thermdat.wavl_star, self.thermdat.flux_star, self.rad.ir.wavl/1e3)
+
+        # Placeholder for picaso object
+        self.ptherm = None
     
     def surface_temperature_robust(self, P_i, T_guess_mid=None, T_perturbs=None):
         """Similar to self.surface_temperature, except more robust.
@@ -249,6 +273,38 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
 
          # Success or not, we return at this point.
         return converged
+    
+    def set_custom_albedo(self, wv, albedo):
+        """Sets a cutsom surface albedo/emissivity. The input is 
+        constantly extrapolated.
+
+        Parameters
+        ----------
+        wv : ndarray[double,ndim=1]
+            Wavelength points in microns.
+        albedo : ndarray[double,ndim=1]
+            Surface albedo at each wavelength.
+        """        
+
+        # Get wv grid of IR
+        freq = self.rad.ir.freq # Hz
+        freq_av = (freq[1:]+freq[:-1])/2 # Hz
+        wv_ir_av = 1e6*const.c/freq_av # microns
+
+        # Get wv grid of Solar
+        freq = self.rad.sol.freq # Hz
+        freq_av = (freq[1:]+freq[:-1])/2 # Hz
+        wv_sol_av = 1e6*const.c/freq_av # microns
+
+        albedo_c = np.interp(wv_sol_av, wv, albedo)
+        emissivity_c = 1.0 - np.interp(wv_ir_av, wv, albedo)
+
+        self.rad.surface_albedo = albedo_c
+        self.rad.surface_emissivity = emissivity_c
+
+###
+### Making spectra
+###
 
     def fpfs_blackbody(self, wavl, T):
         """Generates the planet-to-star flux ratio for a blackbody of a given
@@ -278,6 +334,16 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         fpfs = F_planet/F_star * (thermdat.R_planet**2/thermdat.R_star**2)
 
         return F_planet, F_star, fpfs
+    
+    def fpfs_blackbody_instant_reradiation(self, wavl):
+        flux = bolometric_flux(self.thermdat.Teq, 0.0)
+        T = bare_rock_dayside_temperature(flux, 0.0, 2/3)
+        return self.fpfs_blackbody(wavl, T)
+    
+    def fpfs_blackbody_full_redistribution(self, wavl):
+        flux = bolometric_flux(self.thermdat.Teq, 0.0)
+        T = bare_rock_dayside_temperature(flux, 0.0, 1/4)
+        return self.fpfs_blackbody(wavl, T)
 
     def fpfs(self):
         """Generates the planet-to-star flux ratio using the most recent
@@ -322,49 +388,81 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             T[i] = inverse_blackbody(F_planet[i]/np.pi,np.array([wv_av/1e4]))
         return wavl, T
 
-    # def fpfs_picaso(self, bundle, opacityclass, picaso_kwargs={}):
-    #     bundle.surface_reflect(self.surface_albedo_hires, opacityclass.wno, self.surface_albedo_hires_wno)
-    #     atm = self.make_picaso_atm()
-    #     bundle.atmosphere(df=atm)
-    #     bundle.approx(p_reference=np.max(atm['pressure'].to_numpy()))
-    #     df = bundle.spectrum(opacityclass, calculation='thermal', **picaso_kwargs)
-    #     wavl = 1e4/df['wavenumber'][::-1].copy()
-    #     F_planet = df['thermal'][::-1].copy()
-    #     fpfs = df['fpfs_thermal'][::-1].copy()
-    #     return wavl, F_planet, fpfs
+###
+### PICASO utilities
+###
 
-    def set_custom_albedo(self, wv, albedo):
-        """Sets a cutsom surface albedo/emissivity. The input is 
-        constantly extrapolated.
+    def initialize_picaso_from_clima(self, filename_db):
 
-        Parameters
-        ----------
-        wv : ndarray[double,ndim=1]
-            Wavelength points in microns.
-        albedo : ndarray[double,ndim=1]
-            Surface albedo at each wavelength.
-        """        
+        if 'picaso' not in sys.modules:
+            raise Exception('To use picaso, you must first install it.')
 
-        # Get wv grid of IR
-        freq = self.rad.ir.freq # Hz
-        freq_av = (freq[1:]+freq[:-1])/2 # Hz
-        wv_ir_av = 1e6*const.c/freq_av # microns
+        # Planet and star
+        M_planet = self.thermdat.M_planet/constants.M_earth.to('g').value
+        R_planet = self.thermdat.R_planet/constants.R_earth.to('cm').value
+        R_star = self.thermdat.R_star/constants.R_sun.to('cm').value
 
-        # Get wv grid of Solar
-        freq = self.rad.sol.freq # Hz
-        freq_av = (freq[1:]+freq[:-1])/2 # Hz
-        wv_sol_av = 1e6*const.c/freq_av # microns
+        # Stellar flux
+        # ergs/cm^2/s/cm. Must convert to erg/cm^2/s/A (FLAM units)
+        # ergs/cm^2/s/cm * (1e2 cm / m) * (m / 1e10 A)
+        flux_star = self.thermdat.flux_star*(1e2/1)*(1/1e10)
+        wv_star = (self.thermdat.wavl_star[1:] + self.thermdat.wavl_star[:-1])/2 # microns
 
-        albedo_c = np.interp(wv_sol_av, wv, albedo)
-        emissivity_c = 1.0 - np.interp(wv_ir_av, wv, albedo)
+        star_kwargs = {
+            'filename': 'hlsp_hazmat_phoenix_synthspec_trappist-1_1a_v1_fullres_picaso.txt',
+            'w_unit': 'um',
+            'f_unit': 'FLAM'
+        }
+        with NamedTemporaryFile('w') as f:
+            np.savetxt(f, np.concatenate(([wv_star], [flux_star])).T)
+            f.flush()
 
-        self.rad.surface_albedo = albedo_c
-        self.rad.surface_emissivity = emissivity_c
+            star_kwargs = {
+                'filename': f.name,
+                'w_unit': 'um',
+                'f_unit': 'FLAM'
+            }
+            self.ptherm = PicasoThermalEmission(
+                filename_db, 
+                M_planet, 
+                R_planet, 
+                R_star, 
+                star_kwargs=star_kwargs
+            )
+
+        return self.ptherm
+    
+    def make_picaso_atm(self):
+        atm = {}
+        atm['pressure'] = self.P/1e6
+        atm['temperature'] = self.T
+        for i,sp in enumerate(self.species_names):
+            atm[sp] = self.f_i[:,i]
+        for key in atm:
+            atm[key] = atm[key][::-1].copy()
+        atm = pd.DataFrame(atm)
+        return atm
+
+    def fpfs_picaso(self, R=100, wavl=None, **kwargs):
+        if self.ptherm is None:
+            raise Exception('You must first initialize picaso with `initialize_picaso_from_clima`')
+        return self.ptherm.fpfs(self.make_picaso_atm(), R=R, wavl=wavl, **kwargs)
+    
+    def brightness_temperature_picaso(self, R=100, wavl=None, **kwargs):
+        if self.ptherm is None:
+            raise Exception('You must first initialize picaso with `initialize_picaso_from_clima`')
+        return self.ptherm.brightness_temperature(self.make_picaso_atm(), R=R, wavl=wavl, **kwargs)
+
+###
+### PandExo utilities
+###
 
     def create_exo_dict(self, total_observing_time, eclipse_duration, kmag, starpath):
-        import pandexo.engine.justdoit as jdi
 
-        exo_dict = jdi.load_exo_dict()
+        if 'pandexo' not in sys.modules:
+            raise Exception('To use pandexo, you must first install it.')
+
+        exo_dict = pandexo_jdi.load_exo_dict()
 
         exo_dict['observation']['sat_level'] = 80
         exo_dict['observation']['sat_unit'] = '%'
@@ -414,7 +512,9 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         return filestr
     
     def _run_pandexo(self, total_observing_time, eclipse_duration, kmag, inst, verbose=False, **kwargs):
-        import pandexo.engine.justdoit as jdi
+
+        if 'pandexo' not in sys.modules:
+            raise Exception('To use pandexo, you must first install it.')
 
         with NamedTemporaryFile('w') as f:
             
@@ -426,7 +526,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             exo_dict = self.create_exo_dict(total_observing_time, eclipse_duration, kmag, f.name)
 
             # Run pandexo
-            result = jdi.run_pandexo(exo_dict, inst, verbose=verbose, **kwargs)
+            result = pandexo_jdi.run_pandexo(exo_dict, inst, verbose=verbose, **kwargs)
 
         return result
 
@@ -450,6 +550,10 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             err = err_n
 
         return wavl, F, err
+
+###
+### Making stellar fluxes
+###
 
 def get_planet_flux(Teq, wv_star, F_star, nw):
 
@@ -608,26 +712,60 @@ def grid_at_resolution(min_wv, max_wv, R):
     wavl[-1] = max_wv
     return np.array(wavl)
 
-SETTINGS_FILE_TEMPLATE = """
-atmosphere-grid:
-  number-of-layers: NULL
-  
-planet:
-  planet-mass: NULL
-  planet-radius: NULL
-  number-of-zenith-angles: NULL
-  surface-albedo: 0.1
+class PicasoThermalEmission():
 
+    def __init__(self, filename_db, M_planet, R_planet, R_star, star_kwargs={}):
+
+        self.opa = jdi.opannection(filename_db=filename_db)
+        self.case = jdi.inputs()
+        self.case.phase_angle(0)
+        self.case.gravity(mass=M_planet, mass_unit=jdi.u.Unit('M_earth'),
+                     radius=R_planet, radius_unit=jdi.u.Unit('R_earth'))
+        self.case.star(self.opa, radius=R_star, radius_unit=jdi.u.Unit('R_sun'), **star_kwargs)
+        self.case.surface_reflect(np.ones(self.opa.wno.shape[0])*0.0,self.opa.wno)
+
+    def _spectrum(self, atm, **kwargs):
+        self.case.atmosphere(df=atm, verbose=False)
+        self.case.approx(p_reference=np.max(atm['pressure'].to_numpy()))
+        df = self.case.spectrum(self.opa, calculation='thermal', **kwargs)
+        return df
+
+    def fpfs(self, atm, R=100, wavl=None, **kwargs):
+        df = self._spectrum(atm, **kwargs)
+
+        wavl_h = 1e4/df['wavenumber'][::-1].copy()
+        fpfs_h = df['fpfs_thermal'][::-1].copy()
+        fp_h = df['thermal'][::-1].copy()
+        fpfs_h = (fpfs_h[1:] + fpfs_h[:-1])/2
+        fp_h = (fp_h[1:] + fp_h[:-1])/2
+
+        if wavl is None:
+            wavl = grid_at_resolution(np.min(wavl_h), np.max(wavl_h), R)
+
+        fp = rebin(wavl_h, fp_h, wavl)
+        fpfs = rebin(wavl_h, fpfs_h, wavl)
+
+        return wavl, fp, fpfs
+    
+    def brightness_temperature(self, atm, R=100, wavl=None, **kwargs):
+        wavl, F_planet, _ = self.fpfs(atm, R=R, wavl=wavl, **kwargs)
+        T = np.empty(F_planet.shape[0])
+        for i in range(F_planet.shape[0]):
+            wv_av = (wavl[i] + wavl[i+1])/2
+            T[i] = inverse_blackbody(F_planet[i]/np.pi,np.array([wv_av/1e4]))
+        return wavl, T
+
+DEFAULT_OPACITIES = """
 optical-properties:
   ir:
-    k-method: AdaptiveEquivalentExtinction
+    k-method: RandomOverlapResortRebin
     opacities:
       k-distributions: [H2O, CO2, O2]
       CIA: [CO2-CO2, O2-O2]
       rayleigh: [CO2, O2, H2O]
       water-continuum: MT_CKD
   solar:
-    k-method: AdaptiveEquivalentExtinction
+    k-method: RandomOverlapResortRebin
     opacities:
       k-distributions: [H2O, CO2, O2]
       CIA: [CO2-CO2, O2-O2]
