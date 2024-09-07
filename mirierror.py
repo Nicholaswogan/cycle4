@@ -27,13 +27,24 @@ def get_error(filtername, tau_in, tau_out):
     return filterdict
 
 def get_errors(filters, nvisit, tau_in, tau_out):
+    if len(set(filters)) != len(filters):
+        raise Exception('Duplicates filters')
+    
+    inds = np.argsort(filters)
+    filters = np.array(filters)[inds]
+    nvisit = np.array(nvisit)[inds]
+
+    inds = np.where(nvisit > 0)
+    filters = filters[inds]
+    nvisit = nvisit[inds]
+
     data_bins = np.empty((len(filters),2))
     errs = np.empty(len(filters))
     for i,f in enumerate(filters):
         res = get_error(f, tau_in, tau_out)
         errs[i] = res['fpfs_std']/np.sqrt(nvisit[i])
         data_bins[i,:] = np.array(res['wavelength-range'])
-    return errs, data_bins
+    return errs, data_bins, filters
 
 ETC_RESULTS = """
 F1280W:

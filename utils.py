@@ -434,24 +434,30 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
     
     def make_picaso_atm(self):
         atm = {}
-        atm['pressure'] = self.P/1e6
-        atm['temperature'] = self.T
+        atm['pressure'] = np.append(self.P_surf,self.P)/1e6
+        atm['temperature'] = np.append(self.T_surf,self.T)
         for i,sp in enumerate(self.species_names):
             atm[sp] = self.f_i[:,i]
+            atm[sp] = np.append(self.f_i[0,i],atm[sp])
         for key in atm:
             atm[key] = atm[key][::-1].copy()
         atm = pd.DataFrame(atm)
         return atm
-
-    def fpfs_picaso(self, R=100, wavl=None, **kwargs):
-        if self.ptherm is None:
-            raise Exception('You must first initialize picaso with `initialize_picaso_from_clima`')
-        return self.ptherm.fpfs(self.make_picaso_atm(), R=R, wavl=wavl, **kwargs)
     
-    def brightness_temperature_picaso(self, R=100, wavl=None, **kwargs):
+    def set_custom_albedo_picaso(self, wv, albedo):
         if self.ptherm is None:
             raise Exception('You must first initialize picaso with `initialize_picaso_from_clima`')
-        return self.ptherm.brightness_temperature(self.make_picaso_atm(), R=R, wavl=wavl, **kwargs)
+        self.ptherm.set_custom_albedo(wv, albedo)
+
+    def fpfs_picaso(self, R=100, wavl=None, atmosphere_kwargs={}, **kwargs):
+        if self.ptherm is None:
+            raise Exception('You must first initialize picaso with `initialize_picaso_from_clima`')
+        return self.ptherm.fpfs(self.make_picaso_atm(), R=R, wavl=wavl, atmosphere_kwargs=atmosphere_kwargs, **kwargs)
+    
+    def brightness_temperature_picaso(self, R=100, wavl=None, atmosphere_kwargs={}, **kwargs):
+        if self.ptherm is None:
+            raise Exception('You must first initialize picaso with `initialize_picaso_from_clima`')
+        return self.ptherm.brightness_temperature(self.make_picaso_atm(), R=R, wavl=wavl, atmosphere_kwargs=atmosphere_kwargs, **kwargs)
 
 ###
 ### PandExo utilities
@@ -724,14 +730,17 @@ class PicasoThermalEmission():
         self.case.star(self.opa, radius=R_star, radius_unit=jdi.u.Unit('R_sun'), **star_kwargs)
         self.case.surface_reflect(np.ones(self.opa.wno.shape[0])*0.0,self.opa.wno)
 
-    def _spectrum(self, atm, **kwargs):
-        self.case.atmosphere(df=atm, verbose=False)
+    def set_custom_albedo(self, wv, albedo):
+        self.case.surface_reflect(albedo[::-1].copy(), self.opa.wno, (1e4/wv[::-1]).copy())
+
+    def _spectrum(self, atm, atmosphere_kwargs={}, **kwargs):
+        self.case.atmosphere(df=atm, verbose=False, **atmosphere_kwargs)
         self.case.approx(p_reference=np.max(atm['pressure'].to_numpy()))
         df = self.case.spectrum(self.opa, calculation='thermal', **kwargs)
         return df
 
-    def fpfs(self, atm, R=100, wavl=None, **kwargs):
-        df = self._spectrum(atm, **kwargs)
+    def fpfs(self, atm, R=100, wavl=None, atmosphere_kwargs={}, **kwargs):
+        df = self._spectrum(atm, atmosphere_kwargs=atmosphere_kwargs, **kwargs)
 
         wavl_h = 1e4/df['wavenumber'][::-1].copy()
         fpfs_h = df['fpfs_thermal'][::-1].copy()
@@ -747,8 +756,8 @@ class PicasoThermalEmission():
 
         return wavl, fp, fpfs
     
-    def brightness_temperature(self, atm, R=100, wavl=None, **kwargs):
-        wavl, F_planet, _ = self.fpfs(atm, R=R, wavl=wavl, **kwargs)
+    def brightness_temperature(self, atm, R=100, wavl=None, atmosphere_kwargs={}, **kwargs):
+        wavl, F_planet, _ = self.fpfs(atm, R=R, wavl=wavl, atmosphere_kwargs=atmosphere_kwargs, **kwargs)
         T = np.empty(F_planet.shape[0])
         for i in range(F_planet.shape[0]):
             wv_av = (wavl[i] + wavl[i+1])/2
