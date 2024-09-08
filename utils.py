@@ -405,7 +405,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
 ### PICASO utilities
 ###
 
-    def initialize_picaso_from_clima(self, filename_db):
+    def initialize_picaso_from_clima(self, filename_db, opannection_kwargs={}):
 
         if 'picaso' not in sys.modules:
             raise Exception('To use picaso, you must first install it.')
@@ -440,6 +440,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
                 M_planet, 
                 R_planet, 
                 R_star, 
+                opannection_kwargs=opannection_kwargs,
                 star_kwargs=star_kwargs
             )
 
@@ -733,9 +734,9 @@ def grid_at_resolution(min_wv, max_wv, R):
 
 class PicasoThermalEmission():
 
-    def __init__(self, filename_db, M_planet, R_planet, R_star, star_kwargs={}):
+    def __init__(self, filename_db, M_planet, R_planet, R_star, opannection_kwargs={}, star_kwargs={}):
 
-        self.opa = jdi.opannection(filename_db=filename_db)
+        self.opa = jdi.opannection(filename_db=filename_db, **opannection_kwargs)
         self.case = jdi.inputs()
         self.case.phase_angle(0)
         self.case.gravity(mass=M_planet, mass_unit=jdi.u.Unit('M_earth'),

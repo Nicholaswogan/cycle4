@@ -1,3 +1,6 @@
+import numpy as np
+import requests
+
 class Star:
     radius : float # relative to the sun
     Teff : float # K
@@ -61,10 +64,52 @@ LTT1445A = Star(
     planets={'b':LTT1445Ab,'c':LTT1445Ac}
 )
 
+# Agol et al. (2021) for all parameters
+TRAPPIST1b = Planet(
+    radius=1.116,
+    mass=1.374,
+    Teq=397.31,
+    transit_duration=np.nan,
+    eclipse_duration=np.nan,
+    a=1.154e-2,
+    stellar_flux=4.153*1361,
+)
 
+TRAPPIST1c = Planet(
+    radius=1.097,
+    mass=1.308,
+    Teq=339.5,
+    transit_duration=np.nan,
+    eclipse_duration=np.nan,
+    a=1.580e-2,
+    stellar_flux=2.214*1361,
+)
 
+TRAPPIST1 = Star(
+    radius=0.1192,
+    Teff=2566,
+    metal=np.nan,
+    kmag=np.nan,
+    logg=5.2396,
+    planets={'b':TRAPPIST1b,'c':TRAPPIST1c}
+)
 
-
-
-
-
+def download_trappist1_spectrum():
+    url = 'http://archive.stsci.edu/hlsps/hazmat/hlsp_hazmat_phoenix_synthspec_trappist-1_1a_v1_fullres.txt'
+    r = requests.get(url)
+    lines = r.content.decode().split('\n')
+    wv = np.array([float(a.split()[0]) for a in lines[1:-1]])
+    F = np.array([float(a.split()[1]) for a in lines[1:-1]])
+    wv = wv/10 # convert from A to nm
+    F = F*10 # convert from erg/s/cm^2/A to mW/m2/nm
+    # removed duplicate wavelengths
+    wv, inds = np.unique(wv,return_index=True)
+    F = F[inds]
+    
+    fmt = '{:30}'
+    with open('input/hlsp_hazmat_phoenix_synthspec_trappist-1_1a_v1_fullres_correctunits.txt','w') as f:
+        f.write('Wavelength (nm)               Stellar flux (mW/m^2/nm)        \n')
+        for i in range(wv.shape[0]):
+            f.write(fmt.format('%.15e'%wv[i]))
+            f.write(fmt.format('%.15e'%F[i]))
+            f.write('\n')
