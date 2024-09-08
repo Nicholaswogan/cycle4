@@ -22,6 +22,9 @@ try:
 except ModuleNotFoundError:
     pass
 
+# Ozone calculator
+from ozone import OzoneCalculator
+
 # We use a jitclass because it has strict type checking
 @nb.experimental.jitclass()
 class ThermalEmissionData():
@@ -41,7 +44,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
     def __init__(self, Teq, M_planet, R_planet, R_star, Teff=None, metal=None, logg=None, 
                  stellar_surface_file=None, catdir='phoenix', nw=5000, stellar_surface_scaling=1.0,
                  species_file=None, opacities_file=None, data_dir=None, nz=50, number_of_zeniths=1,
-                 photon_scale_factor=1.0):
+                 ozone_model=False):
         """Initializes the code. 
 
         Parameters
@@ -81,8 +84,6 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             Number of vertical layers in the climate model, by default 50
         number_of_zeniths : int, optional
             Number of zenith angles in the radiative transfer calculation, by default 1
-        photon_scale_factor : float, optional
-            A scaling factor to be applied to the stellar irradiation at the planet, by default 1.0.
         """ 
         
         # Species file
@@ -104,7 +105,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         settings_dict['planet']['planet-mass'] = float(M_planet*constants.M_earth.to('g').value) # grams
         settings_dict['planet']['planet-radius'] = float(R_planet*constants.R_earth.to('cm').value) # cm
         settings_dict['planet']['number-of-zenith-angles'] = int(number_of_zeniths)
-        settings_dict['planet']['photon-scale-factor'] = int(photon_scale_factor)
+        settings_dict['planet']['photon-scale-factor'] = 1
         settings_dict['planet']['surface-albedo'] = 0.0
 
         if stellar_surface_file is None:
@@ -147,7 +148,13 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
                         f_flux.name,
                         data_dir=data_dir
                     )
-    
+
+        self.ozone = None
+        if ozone_model:
+            if stellar_surface_file is None:
+                raise ClimaException('A custom stellar suface file must be supplied if using the ozone feature')
+            self.ozone = OzoneCalculator(species_dict, settings_dict, flux_str, data_dir)
+
         # Change default parameters
         self.solve_for_T_trop = True # Enable solving for T_trop
         self.tidally_locked_dayside = True # Enable Tidally locked dayside calculations
@@ -274,6 +281,12 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
          # Success or not, we return at this point.
         return converged
     
+    def add_ozone(self, scale_factor=1):
+        if self.ozone is None:
+            raise ClimaException('To set an ozone profile, the model must be initialized with "ozone_model=True"')
+        success = self.ozone.compute_ozone_profile(self, scale_factor)
+        return success
+
     def set_custom_albedo(self, wv, albedo):
         """Sets a cutsom surface albedo/emissivity. The input is 
         constantly extrapolated.
@@ -769,16 +782,17 @@ optical-properties:
   ir:
     k-method: RandomOverlapResortRebin
     opacities:
-      k-distributions: [H2O, CO2, O2]
+      k-distributions: [H2O, CO2, O2, O3, SO2]
       CIA: [CO2-CO2, O2-O2]
       rayleigh: [CO2, O2, H2O]
       water-continuum: MT_CKD
   solar:
     k-method: RandomOverlapResortRebin
     opacities:
-      k-distributions: [H2O, CO2, O2]
+      k-distributions: [H2O, CO2, O2, O3, SO2]
       CIA: [CO2-CO2, O2-O2]
       rayleigh: [CO2, O2, H2O]
+      photolysis-xs: [H2O, CO2, O2, SO2]
       water-continuum: MT_CKD
 """
 
@@ -787,6 +801,7 @@ atoms:
 - {name: H, mass: 1.00797}
 - {name: O, mass: 15.9994}
 - {name: C, mass: 12.011}
+- {name: S, mass: 32.06}
 
 # List of species that are in the model
 species:
@@ -832,5 +847,23 @@ species:
     temperature-ranges: [0.0, 6000.0]
     data:
     - [29.659, 6.137261, -1.186521, 0.09578, -0.219663, -9.861391, 237.948]
+  note: From the NIST database
+- name: O3
+  composition: {O: 3}
+  thermo:
+    model: Shomate
+    temperature-ranges: [0.0, 1200.0, 6000.0]
+    data:
+    - [21.66157, 79.86001, -66.02603, 19.58363, -0.079251, 132.9407, 243.6406]
+    - [57.81409, 0.730941, -0.039253, 0.00261, -3.560367, 115.7717, 294.5607]
+  note: From the NIST database
+- name: SO2
+  composition: {S: 1, O: 2}
+  thermo:
+    model: Shomate
+    temperature-ranges: [0.0, 1200.0, 6000.0]
+    data:
+    - [21.43049, 74.35094, -57.75217, 16.35534, 0.086731, -305.7688, 254.8872]
+    - [57.48188, 1.009328, -0.07629, 0.005174, -4.045401, -324.414, 302.7798]
   note: From the NIST database
 """
