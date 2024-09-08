@@ -315,6 +315,10 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         self.rad.surface_albedo = albedo_c
         self.rad.surface_emissivity = emissivity_c
 
+        # Also set PICASO surface albedo
+        if self.ptherm is not None:
+            self.set_custom_albedo_picaso(wv, albedo)
+
 ###
 ### Making spectra
 ###
