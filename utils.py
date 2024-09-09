@@ -323,7 +323,7 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
 ### Making spectra
 ###
 
-    def fpfs_blackbody(self, wavl, T):
+    def fpfs_blackbody(self, wavl, T, albedo):
         """Generates the planet-to-star flux ratio for a blackbody of a given
         temperature.
 
@@ -333,6 +333,8 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
             Edges of the wavelength grid in microns.
         T : float
             Blackbody temperature in K.
+        albedo : float
+            Albedo of the surface.
 
         Returns
         -------
@@ -346,21 +348,16 @@ class AdiabatClimateThermalEmission(AdiabatClimate):
         thermdat = self.thermdat
 
         wv_av = (wavl[1:] + wavl[:-1])/2
-        F_planet = blackbody(T, wv_av/1e4)*np.pi
+        F_planet = (1 - albedo)*blackbody(T, wv_av/1e4)*np.pi
         F_star = rebin(thermdat.wavl_star, thermdat.flux_star, wavl)
         fpfs = F_planet/F_star * (thermdat.R_planet**2/thermdat.R_star**2)
 
         return F_planet, F_star, fpfs
     
-    def fpfs_blackbody_instant_reradiation(self, wavl):
-        flux = bolometric_flux(self.thermdat.Teq, 0.0)
-        T = bare_rock_dayside_temperature(flux, 0.0, 2/3)
-        return self.fpfs_blackbody(wavl, T)
-    
-    def fpfs_blackbody_full_redistribution(self, wavl):
-        flux = bolometric_flux(self.thermdat.Teq, 0.0)
-        T = bare_rock_dayside_temperature(flux, 0.0, 1/4)
-        return self.fpfs_blackbody(wavl, T)
+    def fpfs_instant_reradiation(self, wavl, albedo):
+        flux = bolometric_flux(self.thermdat.Teq, albedo)
+        T = bare_rock_dayside_temperature(flux, albedo, 2/3)
+        return self.fpfs_blackbody(wavl, T, albedo)
 
     def fpfs(self):
         """Generates the planet-to-star flux ratio using the most recent

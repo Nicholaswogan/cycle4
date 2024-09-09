@@ -118,12 +118,13 @@ def main(gridvals, filename, ncores):
 
 # Initialize the climate model
 CLIMATE_MODEL = utils.AdiabatClimateThermalEmission(
-    planets.TRAPPIST1c.Teq,
-    planets.TRAPPIST1c.mass,
-    planets.TRAPPIST1c.radius,
-    planets.TRAPPIST1.radius,
-    stellar_surface_file='input/hlsp_hazmat_phoenix_synthspec_trappist-1_1a_v1_fullres_correctunits.txt',
-    stellar_surface_scaling=0.85,
+    planets.LTT1445Ab.Teq,
+    planets.LTT1445Ab.mass,
+    planets.LTT1445Ab.radius,
+    planets.LTT1445A.radius,
+    planets.LTT1445A.Teff,
+    planets.LTT1445A.metal,
+    planets.LTT1445A.logg,
 )
 CLIMATE_MODEL.verbose = False
 _ = CLIMATE_MODEL.initialize_picaso_from_clima(
@@ -178,14 +179,14 @@ def get_gridvals():
     log10PH2O = np.arange(-4,2.01,1) # bars
     log10PCO2 = np.arange(-7,2.01,0.5)
     log10PO2 = np.arange(-5,2.01,1)
-    log10PSO2 = np.arange(-7,0.0,1)
+    log10PSO2 = np.arange(-7,-0.99,1)
     chi = np.array([0.1, 0.25, 0.4]) # heat efficiency term
     albedo = np.arange(0,0.401,0.1)
     gridvals = (log10PH2O,log10PCO2,log10PO2,log10PSO2,chi,albedo)
     return gridvals
 
 if __name__ == "__main__":
-    filename = 'results/TRAPPIST1c_grid.pkl' # Specify output filename
-    ncores = 4 # Specify number of cores
+    filename = 'results/LTT1445Ab_grid_v2.pkl' # Specify output filename
+    ncores = 2 # Specify number of cores
     gridvals = get_gridvals()
     main(gridvals, filename, ncores)
