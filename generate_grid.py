@@ -38,13 +38,15 @@ class GridInterpolator():
         self.gridshape = tuple([len(a) for a in gridvals])
         self.results = res_new
 
-    def make_array_interpolator(self, key):
+    def make_array_interpolator(self, key, logspace=False):
         # Make interpolate for key
         interps = []
         for j in range(len(self.results[0][key])):
             val = np.empty(len(self.results))
             for i,r in enumerate(self.results):
                 val[i] = r[key][j]
+            if logspace:
+                val = np.log10(val)
             interp = interpolate.RegularGridInterpolator(self.gridvals, val.reshape(self.gridshape))
             interps.append(interp)
 
@@ -52,6 +54,8 @@ class GridInterpolator():
             out = np.empty([len(interps)])
             for i,interp in enumerate(interps):
                 out[i] = interp(vals)
+            if logspace:
+                out = 10.0**out
             return out
         
         return interp_arr
